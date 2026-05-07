@@ -8,6 +8,7 @@ import {
 export type RenderParams = {
   scene: Scene;
   dotRadiusLogical: number;
+  gradientInterpolation: number;
   dotColor: string;
   showLines: boolean;
 };
@@ -21,13 +22,18 @@ function stippleAcceptance(luminance: number): number {
   return Math.min(1, darkness * 0.98 + 0.002);
 }
 
+function applyGradientInterpolation(luminance: number, interpolation: number): number {
+  const smooth = luminance * luminance * (3 - 2 * luminance);
+  return luminance + (smooth - luminance) * interpolation;
+}
+
 export function renderScene(
   ctx: CanvasRenderingContext2D,
   pixelSize: number,
   params: RenderParams,
   rng: () => number,
 ): void {
-  const { scene, dotRadiusLogical, dotColor, showLines } = params;
+  const { scene, dotRadiusLogical, gradientInterpolation, dotColor, showLines } = params;
   const scale = pixelSize / LOGICAL_SIZE;
   ctx.save();
   ctx.setTransform(scale, 0, 0, scale, 0, 0);
@@ -63,7 +69,8 @@ export function renderScene(
         const py = y + jy;
         if (!pointInConvexPolygon({ x: px, y: py }, region.vertices)) continue;
 
-        const L = gradientScalarAt({ x: px, y: py }, region);
+        const rawLuminance = gradientScalarAt({ x: px, y: py }, region);
+        const L = applyGradientInterpolation(rawLuminance, gradientInterpolation);
         const p = stippleAcceptance(L);
         if (rng() < p) {
           ctx.beginPath();

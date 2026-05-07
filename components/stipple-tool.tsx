@@ -11,12 +11,17 @@ const MIN_LINES = 1;
 const MAX_LINES = 50;
 const MIN_RADIUS = 0.75;
 const MAX_RADIUS = 6;
+const MIN_INTERPOLATION = 0;
+const MAX_INTERPOLATION = 1;
+const EXPORT_SCALES = [2, 3, 4] as const;
 
 export function StippleTool() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [seed, setSeed] = useState(() => Math.floor(Math.random() * 2 ** 31));
   const [lineCount, setLineCount] = useState(8);
   const [dotRadius, setDotRadius] = useState(2);
+  const [gradientInterpolation, setGradientInterpolation] = useState(0.5);
+  const [exportScale, setExportScale] = useState<number>(2);
   const [dotColor, setDotColor] = useState("#1a1a1a");
   const [showLines, setShowLines] = useState(true);
 
@@ -35,10 +40,11 @@ export function StippleTool() {
     renderScene(ctx, pixelSize, {
       scene,
       dotRadiusLogical: dotRadius,
+      gradientInterpolation,
       dotColor,
       showLines,
     }, mulberry32((seed ^ STIPPLE_RNG_SALT) >>> 0));
-  }, [scene, dotRadius, dotColor, showLines, seed]);
+  }, [scene, dotRadius, gradientInterpolation, dotColor, showLines, seed]);
 
   useEffect(() => {
     paint();
@@ -50,15 +56,17 @@ export function StippleTool() {
   }, [paint]);
 
   const downloadPng = useCallback(() => {
+    const exportPixelSize = LOGICAL_SIZE * exportScale;
     const exportCanvas = document.createElement("canvas");
-    exportCanvas.width = LOGICAL_SIZE;
-    exportCanvas.height = LOGICAL_SIZE;
+    exportCanvas.width = exportPixelSize;
+    exportCanvas.height = exportPixelSize;
     const ctx = exportCanvas.getContext("2d");
     if (!ctx) return;
     ctx.imageSmoothingEnabled = false;
-    renderScene(ctx, LOGICAL_SIZE, {
+    renderScene(ctx, exportPixelSize, {
       scene,
       dotRadiusLogical: dotRadius,
+      gradientInterpolation,
       dotColor,
       showLines,
     }, mulberry32((seed ^ STIPPLE_RNG_SALT) >>> 0));
@@ -67,11 +75,11 @@ export function StippleTool() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = "random-misdirections.png";
+      a.download = `random-misdirections-${exportScale}x.png`;
       a.click();
       URL.revokeObjectURL(url);
     }, "image/png");
-  }, [scene, dotRadius, dotColor, showLines, seed]);
+  }, [scene, dotRadius, gradientInterpolation, exportScale, dotColor, showLines, seed]);
 
   const regenerate = () => {
     setSeed(Math.floor(Math.random() * 2 ** 31));
@@ -101,7 +109,16 @@ export function StippleTool() {
           </h1>
           <p className="text-sm leading-relaxed text-neutral-600 dark:text-neutral-400">
             Lines split the square; each cell gets a random gradient direction, then stippled dots (denser
-            where the gradient is darker).
+            where the gradient is darker). Inspired by Jonas P. Spieker&apos;s{" "}
+            <a
+              href="https://www.instagram.com/reels/DXcAPpLjIcv/"
+              target="_blank"
+              rel="noreferrer"
+              className="underline underline-offset-2 hover:text-neutral-900 dark:hover:text-neutral-200"
+            >
+              this Instagram post
+            </a>
+            .
           </p>
         </header>
 
@@ -135,6 +152,25 @@ export function StippleTool() {
               step={0.05}
               value={dotRadius}
               onChange={(e) => setDotRadius(Number(e.target.value))}
+              className={cn(
+                "h-2 w-full cursor-pointer appearance-none rounded-full bg-neutral-200 dark:bg-neutral-800",
+                "[&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-neutral-900 [&::-webkit-slider-thumb]:shadow-sm dark:[&::-webkit-slider-thumb]:bg-neutral-100",
+                "[&::-moz-range-thumb]:h-4 [&::-moz-range-thumb]:w-4 [&::-moz-range-thumb]:cursor-pointer [&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:border-0 [&::-moz-range-thumb]:bg-neutral-900 dark:[&::-moz-range-thumb]:bg-neutral-100",
+              )}
+            />
+          </label>
+
+          <label className="block space-y-2">
+            <span className="text-xs font-medium uppercase tracking-wider text-neutral-500 dark:text-neutral-500">
+              Gradient interpolation ({gradientInterpolation.toFixed(2)})
+            </span>
+            <input
+              type="range"
+              min={MIN_INTERPOLATION}
+              max={MAX_INTERPOLATION}
+              step={0.01}
+              value={gradientInterpolation}
+              onChange={(e) => setGradientInterpolation(Number(e.target.value))}
               className={cn(
                 "h-2 w-full cursor-pointer appearance-none rounded-full bg-neutral-200 dark:bg-neutral-800",
                 "[&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-neutral-900 [&::-webkit-slider-thumb]:shadow-sm dark:[&::-webkit-slider-thumb]:bg-neutral-100",
@@ -194,7 +230,37 @@ export function StippleTool() {
           </div>
         </div>
 
-        <div className="flex flex-wrap gap-3">
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="flex min-w-28 flex-col gap-2">
+            <span className="text-xs font-medium uppercase tracking-wider text-neutral-500 dark:text-neutral-500">
+              Export scale
+            </span>
+            <div
+              className="inline-flex rounded-full border border-neutral-300 bg-white p-1 shadow-sm dark:border-neutral-700 dark:bg-neutral-950"
+              role="group"
+              aria-label="Export scale"
+            >
+              {EXPORT_SCALES.map((scale) => {
+                const active = exportScale === scale;
+                return (
+                  <button
+                    key={scale}
+                    type="button"
+                    onClick={() => setExportScale(scale)}
+                    aria-pressed={active}
+                    className={cn(
+                      "rounded-full px-3 py-1.5 text-sm font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-400 dark:focus-visible:ring-neutral-600",
+                      active
+                        ? "bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900"
+                        : "text-neutral-700 hover:bg-neutral-100 dark:text-neutral-300 dark:hover:bg-neutral-900",
+                    )}
+                  >
+                    {scale}x
+                  </button>
+                );
+              })}
+            </div>
+          </div>
           <button
             type="button"
             onClick={regenerate}

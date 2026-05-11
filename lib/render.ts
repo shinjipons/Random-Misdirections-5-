@@ -1,9 +1,5 @@
-import type { Scene } from "@/lib/geometry";
-import {
-  LOGICAL_SIZE,
-  gradientScalarAt,
-  pointInConvexPolygon,
-} from "@/lib/geometry";
+import type { PolygonRegion, Scene } from "@/lib/geometry";
+import { LOGICAL_SIZE, pointInConvexPolygon } from "@/lib/geometry";
 
 export type RenderParams = {
   scene: Scene;
@@ -27,6 +23,31 @@ function applyGradientInterpolation(luminance: number, interpolation: number): n
   return luminance + (smooth - luminance) * interpolation;
 }
 
+/** Per-region projection of gradient along (dx,dy); avoids recomputing tMin/tMax per grid sample. */
+function precomputeGradientProjection(region: PolygonRegion) {
+  const dx = Math.cos(region.gradientAngleRad);
+  const dy = Math.sin(region.gradientAngleRad);
+  let tMin = Infinity;
+  let tMax = -Infinity;
+  for (const v of region.vertices) {
+    const t = v.x * dx + v.y * dy;
+    tMin = Math.min(tMin, t);
+    tMax = Math.max(tMax, t);
+  }
+  const span = tMax - tMin || 1;
+  return { dx, dy, tMin, span, inverted: region.gradientInverted };
+}
+
+function rawLuminanceAt(
+  p: { x: number; y: number },
+  g: ReturnType<typeof precomputeGradientProjection>,
+): number {
+  const proj = p.x * g.dx + p.y * g.dy;
+  let u = (proj - g.tMin) / g.span;
+  u = Math.min(1, Math.max(0, u));
+  return g.inverted ? 1 - u : u;
+}
+
 export function renderScene(
   ctx: CanvasRenderingContext2D,
   pixelSize: number,
@@ -35,6 +56,7 @@ export function renderScene(
 ): void {
   const { scene, dotRadiusLogical, gradientInterpolation, dotColor, showLines } = params;
   const scale = pixelSize / LOGICAL_SIZE;
+  const r = dotRadiusLogical;
   ctx.save();
   ctx.setTransform(scale, 0, 0, scale, 0, 0);
 
@@ -44,8 +66,10 @@ export function renderScene(
   const step = STIPPLE_GRID_STEP;
 
   ctx.fillStyle = dotColor;
+  ctx.beginPath();
 
   for (const region of scene.regions) {
+    const grad = precomputeGradientProjection(region);
     let minX = Infinity;
     let minY = Infinity;
     let maxX = -Infinity;
@@ -69,29 +93,30 @@ export function renderScene(
         const py = y + jy;
         if (!pointInConvexPolygon({ x: px, y: py }, region.vertices)) continue;
 
-        const rawLuminance = gradientScalarAt({ x: px, y: py }, region);
+        const rawLuminance = rawLuminanceAt({ x: px, y: py }, grad);
         const L = applyGradientInterpolation(rawLuminance, gradientInterpolation);
         const p = stippleAcceptance(L);
         if (rng() < p) {
-          ctx.beginPath();
-          ctx.arc(px, py, dotRadiusLogical, 0, Math.PI * 2);
-          ctx.fill();
+          ctx.moveTo(px + r, py);
+          ctx.arc(px, py, r, 0, Math.PI * 2);
         }
       }
     }
   }
+
+  ctx.fill();
 
   if (showLines) {
     const lineWidthLogical = Math.max(1 / scale, 0.75);
     ctx.strokeStyle = "#000000";
     ctx.lineWidth = lineWidthLogical;
     ctx.lineCap = "round";
+    ctx.beginPath();
     for (const ln of scene.lines) {
-      ctx.beginPath();
       ctx.moveTo(ln.p1.x, ln.p1.y);
       ctx.lineTo(ln.p2.x, ln.p2.y);
-      ctx.stroke();
     }
+    ctx.stroke();
   }
 
   ctx.restore();

@@ -17,6 +17,9 @@ const EXPORT_SCALES = [2, 3, 4] as const;
 
 export function StippleTool() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const ctxRef = useRef<CanvasRenderingContext2D | null>(null);
+  const lastBufferSizeRef = useRef(0);
+
   const [seed, setSeed] = useState(() => Math.floor(Math.random() * 2 ** 31));
   const [lineCount, setLineCount] = useState(8);
   const [dotRadius, setDotRadius] = useState(2);
@@ -25,51 +28,108 @@ export function StippleTool() {
   const [dotColor, setDotColor] = useState("#1a1a1a");
   const [showLines, setShowLines] = useState(true);
 
+  const seedRef = useRef(seed);
+  const lineCountRef = useRef(lineCount);
+  const dotRadiusRef = useRef(dotRadius);
+  const gradientInterpolationRef = useRef(gradientInterpolation);
+  const dotColorRef = useRef(dotColor);
+  const showLinesRef = useRef(showLines);
+
+  const sliderRafRef = useRef<number | null>(null);
+  const sliderRafPendingRef = useRef(false);
+
+  useEffect(() => {
+    seedRef.current = seed;
+    lineCountRef.current = lineCount;
+    dotRadiusRef.current = dotRadius;
+    gradientInterpolationRef.current = gradientInterpolation;
+    dotColorRef.current = dotColor;
+    showLinesRef.current = showLines;
+  }, [seed, lineCount, dotRadius, gradientInterpolation, dotColor, showLines]);
+
   const scene = useMemo(() => buildScene(seed, lineCount), [seed, lineCount]);
 
-  const paint = useCallback(() => {
+  const paintCore = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const dpr = Math.min(typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1, 2);
     const pixelSize = Math.round(LOGICAL_SIZE * dpr);
-    canvas.width = pixelSize;
-    canvas.height = pixelSize;
-    const ctx = canvas.getContext("2d");
+
+    if (pixelSize !== lastBufferSizeRef.current) {
+      lastBufferSizeRef.current = pixelSize;
+      canvas.width = pixelSize;
+      canvas.height = pixelSize;
+      ctxRef.current = canvas.getContext("2d", { alpha: false });
+      if (ctxRef.current) {
+        ctxRef.current.imageSmoothingEnabled = false;
+      }
+    }
+
+    const ctx = ctxRef.current;
     if (!ctx) return;
-    ctx.imageSmoothingEnabled = false;
-    renderScene(ctx, pixelSize, {
-      scene,
-      dotRadiusLogical: dotRadius,
-      gradientInterpolation,
-      dotColor,
-      showLines,
-    }, mulberry32((seed ^ STIPPLE_RNG_SALT) >>> 0));
-  }, [scene, dotRadius, gradientInterpolation, dotColor, showLines, seed]);
+
+    const sceneNow = buildScene(seedRef.current, lineCountRef.current);
+    renderScene(
+      ctx,
+      pixelSize,
+      {
+        scene: sceneNow,
+        dotRadiusLogical: dotRadiusRef.current,
+        gradientInterpolation: gradientInterpolationRef.current,
+        dotColor: dotColorRef.current,
+        showLines: showLinesRef.current,
+      },
+      mulberry32((seedRef.current ^ STIPPLE_RNG_SALT) >>> 0),
+    );
+  }, []);
+
+  const scheduleSliderPaint = useCallback(() => {
+    if (sliderRafPendingRef.current) return;
+    sliderRafPendingRef.current = true;
+    sliderRafRef.current = requestAnimationFrame(() => {
+      sliderRafRef.current = null;
+      sliderRafPendingRef.current = false;
+      paintCore();
+    });
+  }, [paintCore]);
 
   useEffect(() => {
-    paint();
-  }, [paint]);
+    return () => {
+      if (sliderRafRef.current != null) {
+        cancelAnimationFrame(sliderRafRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
-    window.addEventListener("resize", paint);
-    return () => window.removeEventListener("resize", paint);
-  }, [paint]);
+    paintCore();
+  }, [seed, showLines, dotColor, paintCore]);
+
+  useEffect(() => {
+    window.addEventListener("resize", paintCore);
+    return () => window.removeEventListener("resize", paintCore);
+  }, [paintCore]);
 
   const downloadPng = useCallback(() => {
     const exportPixelSize = LOGICAL_SIZE * exportScale;
     const exportCanvas = document.createElement("canvas");
     exportCanvas.width = exportPixelSize;
     exportCanvas.height = exportPixelSize;
-    const ctx = exportCanvas.getContext("2d");
+    const ctx = exportCanvas.getContext("2d", { alpha: false });
     if (!ctx) return;
     ctx.imageSmoothingEnabled = false;
-    renderScene(ctx, exportPixelSize, {
-      scene,
-      dotRadiusLogical: dotRadius,
-      gradientInterpolation,
-      dotColor,
-      showLines,
-    }, mulberry32((seed ^ STIPPLE_RNG_SALT) >>> 0));
+    renderScene(
+      ctx,
+      exportPixelSize,
+      {
+        scene,
+        dotRadiusLogical: dotRadius,
+        gradientInterpolation,
+        dotColor,
+        showLines,
+      },
+      mulberry32((seed ^ STIPPLE_RNG_SALT) >>> 0),
+    );
     exportCanvas.toBlob((blob) => {
       if (!blob) return;
       const url = URL.createObjectURL(blob);
@@ -132,7 +192,12 @@ export function StippleTool() {
               min={MIN_LINES}
               max={MAX_LINES}
               value={lineCount}
-              onChange={(e) => setLineCount(Number(e.target.value))}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                lineCountRef.current = v;
+                setLineCount(v);
+                scheduleSliderPaint();
+              }}
               className={cn(
                 "h-2 w-full cursor-pointer appearance-none rounded-full bg-neutral-200 dark:bg-neutral-800",
                 "[&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-neutral-900 [&::-webkit-slider-thumb]:shadow-sm dark:[&::-webkit-slider-thumb]:bg-neutral-100",
@@ -151,7 +216,12 @@ export function StippleTool() {
               max={MAX_RADIUS}
               step={0.05}
               value={dotRadius}
-              onChange={(e) => setDotRadius(Number(e.target.value))}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                dotRadiusRef.current = v;
+                setDotRadius(v);
+                scheduleSliderPaint();
+              }}
               className={cn(
                 "h-2 w-full cursor-pointer appearance-none rounded-full bg-neutral-200 dark:bg-neutral-800",
                 "[&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-neutral-900 [&::-webkit-slider-thumb]:shadow-sm dark:[&::-webkit-slider-thumb]:bg-neutral-100",
@@ -170,7 +240,12 @@ export function StippleTool() {
               max={MAX_INTERPOLATION}
               step={0.01}
               value={gradientInterpolation}
-              onChange={(e) => setGradientInterpolation(Number(e.target.value))}
+              onChange={(e) => {
+                const v = Number(e.target.value);
+                gradientInterpolationRef.current = v;
+                setGradientInterpolation(v);
+                scheduleSliderPaint();
+              }}
               className={cn(
                 "h-2 w-full cursor-pointer appearance-none rounded-full bg-neutral-200 dark:bg-neutral-800",
                 "[&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-neutral-900 [&::-webkit-slider-thumb]:shadow-sm dark:[&::-webkit-slider-thumb]:bg-neutral-100",
